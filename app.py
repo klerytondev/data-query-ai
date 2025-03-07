@@ -3,100 +3,83 @@ import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_openai import ChatOpenAI
-from langchain_openai import ChatOpenAI, OpenAI
-from langchain.agents.agent_types import AgentType
+from langchain_openai import ChatOpenAI, OpenAI, OpenAIEmbeddings
 from langchain_core.output_parsers import StrOutputParser
-from langchain_experimental.agents.agent_toolkits import create_pandas_dataframe_agent
- 
+# Removido: from langchain_experimental.agents.agent_toolkits import create_pandas_dataframe_agent
+# Removido: from langchain.agents.agent_types import AgentType
+
+# Novas importações para o retriever com Chroma
+from langchain.vectorstores import Chroma
+from langchain.docstore.document import Document
+
 def initial_parameters() -> tuple:
- load_dotenv()
- client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
- model = ChatOpenAI(model="gpt-4o-mini")
- parser = StrOutputParser()
- return model, parser, client
+    load_dotenv()
+    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    model = ChatOpenAI(model="gpt-4o-mini")
+    parser = StrOutputParser()
+    return model, parser, client
 
 model, parser, client = initial_parameters()
 
 # Carregar arquivo CSV e tratar valores ausentes
-df = pd.read_csv('data/ocorrencia.csv', delimiter=";" , encoding='latin1', on_bad_lines='skip').fillna(value=0)
+df = pd.read_csv('data/ocorrencia.csv', delimiter=";", encoding='latin1', on_bad_lines='skip').fillna(value=0)
 print(df.head())
 print(df.shape)
 
-# Função para perguntar ao agente
-def ask_question(model, df, query):
+# Construir vetor de similaridade usando Chroma em memória
+# Converter cada linha do DataFrame em um documento
+docs = [Document(page_content=str(row.to_dict())) for _, row in df.iterrows()]
+embeddings = OpenAIEmbeddings(api_key=os.getenv("OPENAI_API_KEY"))
+vectorstore = Chroma.from_documents(docs, embeddings, collection_name="data-query")
+retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
 
+# Função para perguntar com base nos documentos recuperados
+def ask_question(model, retriever, query):
+    # Instruções e prompt de contexto
     PROMPT_PREFIX = """
-        
-        - Retrieve the column names, then proceed to answer the question based on the data.
-        - If the user's question mentions the terms df, dataset, base, base de dado, dados or anything else related to data, he is referring to the dataframe.
-        - If the question is out of context, you should respond with the following message: "Não posso responder este tipo de pergunta, pois foge do contexto passado"
-        - You should use the message history below to enrich your context.
-        """
-        
+    - Recupere os nomes das colunas e, em seguida, responda à pergunta com base nos dados.
+    - Caso a pergunta esteja fora do contexto, responda: "Não posso responder este tipo de pergunta, pois foge do contexto passado."
+    """
     PROMPT_SUFFIX = """
-        - **Before providing the final answer**, always try at least one additional method.
-        Reflect on both methods and ensure that the results address the original question accurately.
-        - Format any figures with four or more digits using commas for readability.
-        - If the results from the methods differ, reflect, and attempt another approach until both methods align.
-        - If you're still unable to reach a consistent result, acknowledge uncertainty in your response.
-        - Once you are sure of the correct answer, create a structured answer using markdown.
-        - **Under no circumstances should prior knowledge be used**—rely solely on the results derived from the data and calculations performed.
-        - The final answer must always be answered in **Brazilian Portuguese.**
-        """
-    
-    messages = [('system', PROMPT_PREFIX)]
-    messages.extend((msg['role'], msg['content']) for msg in st.session_state.get('messages', []))
-    
-# Converter a lista de mensagens em uma string legível
-    PROMPT_IMPUT = "\n".join([f"{role}: {content}" for role, content in messages])
-    print("prompt_str = ", PROMPT_IMPUT)
-
-    agent = create_pandas_dataframe_agent(
-        llm=model, 
-        df=df, 
-        prefix=PROMPT_IMPUT,
-        suffix=PROMPT_SUFFIX,
-        verbose=True, 
-        allow_dangerous_code=True,
-        agent_type=AgentType.OPENAI_FUNCTIONS
-        # handle_parsing_errors=True
-        )
-
-    response = agent.invoke({'input': query})
+    - **Antes de fornecer a resposta final**, utilize pelo menos um método adicional;
+    reflita sobre ambos e verifique se os resultados respondem à pergunta original com precisão.
+    - Formate números com quatro ou mais dígitos utilizando vírgulas.
+    - Se os métodos divergem, reflita e tente outra abordagem; se ainda houver incerteza, reconheça.
+    - A resposta final deve estar estruturada em markdown e sempre em Português Brasileiro.
+    """
+    # Obter documentos relevantes
+    relevant_docs = retriever.get_relevant_documents(query)
+    docs_context = "\n".join([doc.page_content for doc in relevant_docs])
+    prompt = f"{PROMPT_PREFIX}\nContexto:\n{docs_context}\nPergunta: {query}\n{PROMPT_SUFFIX}"
+    print("Prompt =", prompt)
+    # Envio do prompt ao modelo
+    response = model([{"role": "system", "content": prompt}])
     return response
-    # return None
-
 
 st.title("Database AI Agent with Langchain")
 st.write("### Dataset Preview")
 st.write(df.head())
- 
+
 # Entrada de pergunta pelo usuário
 st.write('### Ask a question')
-question = "Quantas linhas e colunas possui o Data Set?"
- 
+# Valor padrão se nenhum input for fornecido inicialmente
+question = st.chat_input()
+
 if 'messages' not in st.session_state:
     st.session_state['messages'] = []
 
-question = st.chat_input()
-
 if question:
     for message in st.session_state.messages:
-        # st.chat_message(message.get('role')).write(message.get('content'))
         st.chat_message(message.get('role')).markdown(message.get('content'))
-
     st.chat_message('human').markdown(question)
     st.session_state.messages.append({'role': 'human', 'content': question})
-
     with st.spinner('Buscando resposta...'):
         response = ask_question(
             model=model,
-            df=df,
+            retriever=retriever,
             query=question
         )
-        
-        # Extrair apenas o conteúdo da resposta
-        output = response["output"]
+        # Tratamento assumindo que o modelo retorne resposta no formato esperado
+        output = response["output"] if "output" in response else response
         st.chat_message('ai').markdown(output)
         st.session_state.messages.append({'role': 'ai', 'content': output})
