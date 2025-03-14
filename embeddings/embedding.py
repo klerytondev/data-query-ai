@@ -13,7 +13,7 @@ os.environ["OPENAI_API_KEY"] = os.getenv("OPENAI_API_KEY")
 
 # Modificado: definir o caminho absoluto para 'carros.csv'
 # pdf_path = "DATA-QUERY-AI/embeddings/ocorrencia.csv"
-pdf_path = "embeddings\ocorrencia.csv"
+pdf_path = "embeddings\carros.csv"
 
 loader = CSVLoader(pdf_path)
 docs = loader.load()

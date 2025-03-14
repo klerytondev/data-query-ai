@@ -1,80 +1,150 @@
-import os
 import streamlit as st
+import pandas as pd
+import uuid
+import re
+from langchain_community.chat_models import ChatOpenAI
+from langchain.prompts import ChatPromptTemplate
+from langchain.schema import SystemMessage, HumanMessage
 
-from decouple import config
+# 🔹 Configuração do modelo OpenAI
+llm = ChatOpenAI(model="gpt-3.5-turbo", temperature=0)
 
-from langchain import hub
-from langchain.agents import create_react_agent, AgentExecutor
-from langchain.prompts import PromptTemplate
-from langchain_community.utilities.sql_database import SQLDatabase
-from langchain_community.agent_toolkits.sql.toolkit import SQLDatabaseToolkit
-from langchain_openai import ChatOpenAI
+# 🔹 Garante que cada sessão tenha um ID único
+if "session_id" not in st.session_state:
+    st.session_state.session_id = str(uuid.uuid4())
 
+# 🔹 Simulação: os dados chegam como um DataFrame Pandas (com nulos)
+def receber_dados():
+    return pd.DataFrame({
+        "mes": ["Janeiro", "Fevereiro", None, "Abril", "Maio"],
+        "vendas": [1000, None, 1200, 1800, 1700]
+    })
 
-os.environ['OPENAI_API_KEY'] = config('OPENAI_API_KEY')
+# 🔹 Armazena os dados no session_state
+if "df" not in st.session_state:
+    st.session_state.df = receber_dados()
 
-st.set_page_config(
-    page_title='Estoque GPT',
-    page_icon='📄',
-)
-st.header('Assistente de Estoque')
+df = st.session_state.df  # Carrega os dados da sessão
 
-model_options = [
-    'gpt-3.5-turbo',
-    'gpt-4',
-    'gpt-4-turbo',
-    'gpt-4o-mini',
-    'gpt-4o',
-]
-selected_model = st.sidebar.selectbox(
-    label='Selecione o modelo LLM',
-    options=model_options,
-)
+# 🔹 Esquema detalhado passado como dicionário
+schema_info = {
+    "mes": {"nome_logico": "Mês da Venda", "tipo": "string", "descricao": "Nome do mês referente às vendas"},
+    "vendas": {"nome_logico": "Valor das Vendas", "tipo": "float", "descricao": "Total de vendas realizadas no mês"}
+}
 
-st.sidebar.markdown('### Sobre')
-st.sidebar.markdown('Este agente consulta um banco de dados de estoque utilizando um modelo GPT.')
+# 🔹 Tratamento de valores nulos
+for coluna in df.columns:
+    if df[coluna].dtype == "object":  # Se for string
+        df[coluna].fillna("Desconhecido", inplace=True)
+    else:  # Se for numérico
+        df[coluna].fillna(0, inplace=True)
 
-st.write('Faça perguntas sobre o estoque de produtos, preços e reposições.')
-user_question = st.text_input('O que deseja saber sobre o estoque?')
+# 🔹 Formatando o esquema para o LLM
+schema_str = "\n".join([
+    f"- **{info['nome_logico']}** (`{col}`): {info['descricao']} (Tipo: {info['tipo']})"
+    for col, info in schema_info.items()
+])
 
-model = ChatOpenAI(
-    model=selected_model,
-)
+# 🔹 Inicializa o histórico no session_state
+if "historico" not in st.session_state:
+    st.session_state.historico = []
 
-db = SQLDatabase.from_uri('sqlite:///estoque.db')
-toolkit = SQLDatabaseToolkit(
-    db=db,
-    llm=model,
-)
-system_message = hub.pull('hwchase17/react')
+# 🔹 Função para validar a query gerada
+def validar_query(query):
+    """Verifica se a query contém comandos proibidos."""
+    padrao_proibido = r"\b(DROP|DELETE|ALTER|UPDATE|INSERT|REPLACE|MERGE|TRUNCATE)\b"
+    return not re.search(padrao_proibido, query, re.IGNORECASE)
 
-agent = create_react_agent(
-    llm=model,
-    tools=toolkit.get_tools(),
-    prompt=system_message,
-)
+# 🔹 Prefixo atualizado com o esquema detalhado
+prefixo = f"""
+Você está atuando como um assistente de dados e deve gerar consultas Pandas para responder perguntas sobre um DataFrame.
 
-agent_executor = AgentExecutor(
-    agent=agent,
-    tools=toolkit.get_tools(),
-    verbose=True,
-)
+📌 **Regras:**
+1️⃣ O esquema do DataFrame é o seguinte:
+{schema_str}
 
-prompt = '''
-Use as ferramentas necessárias para responder perguntas relacionadas ao
-estoque de produtos. Você fornecerá insights sobre produtos, preços, 
-reposição de estoque e relatórios conforme solicitado pelo usuário.
-A resposta final deve ter uma formatação amigável de visualização para o usuário.
-Sempre responda em português brasileiro.
-Pergunta: {q}
-'''
-prompt_template = PromptTemplate.from_template(prompt)
+2️⃣ Algumas colunas podem conter **valores nulos**. Esses valores já foram preenchidos automaticamente:
+   - Strings vazias foram substituídas por `"Desconhecido"`.
+   - Valores numéricos nulos foram substituídos por `0`.
 
-if st.button('Consultar'):
-    if user_question:
-        with st.spinner('Consultando o banco de dados...'):
-            formatted_prompt = prompt_template.format(q=user_question)
-            output = agent_executor.invoke({'input': formatted_prompt})
-            st.markdown(output.get('output'))
+3️⃣ As perguntas podem ter **contexto baseado no histórico da conversa**. 
+Sempre leve em consideração o que já foi perguntado e respondido anteriormente.
+
+4️⃣ Gere **somente a query Pandas**, sem explicações adicionais. 
+
+🚫 **Restrições:** A consulta **NÃO pode modificar os dados** (exemplo: `DROP`, `DELETE`, `ALTER`, etc.).
+"""
+
+sufixo = """
+Agora gere uma consulta Pandas para a seguinte pergunta, considerando o histórico da conversa:
+{pergunta}
+"""
+
+# prompt_template = ChatPromptTemplate.from_messages([
+#     SystemMessage(content=prefixo),
+#     HumanMessage(content=sufixo)
+# ])
+
+# 🔹 Interface Streamlit
+st.title("🔍 Chat de Dados com RAG e Pandas")
+st.write(f"🆔 **ID da Sessão:** {st.session_state.session_id}")
+
+pergunta = st.text_input("📌 Faça uma pergunta sobre os dados:")
+
+if pergunta:
+    # 🔹 Mantém apenas as últimas 10 interações no histórico
+    if len(st.session_state.historico) > 10:
+        st.session_state.historico = st.session_state.historico[-10:]
+
+    # 🔹 Adiciona a pergunta ao histórico
+    st.session_state.historico.append(HumanMessage(content=pergunta))
+
+    # 🔹 Constrói o prompt com o histórico da conversa
+    prompt_historico = "\n".join([msg.content for msg in st.session_state.historico])
+    prompt_completo = f"{prefixo}\n\n🔹 **Histórico da Conversa:**\n{prompt_historico}\n\n{sufixo.format(pergunta=pergunta)}"
+
+    # 🔹 O LLM gera a consulta Pandas
+    resposta_llm = llm.invoke(prompt_completo)
+    query_pandas = resposta_llm.content.strip()
+
+    # 🔹 Valida a query antes de executar
+    if not validar_query(query_pandas):
+        st.error("❌ **Erro:** A consulta gerada contém comandos proibidos!")
     else:
-        st.warning('Por favor, insira uma pergunta.')
+        # 🔹 Executa a consulta no DataFrame
+        try:
+            resposta = eval(query_pandas, {"df": df})  # Executa apenas com df no escopo seguro
+            st.success("✅ **Consulta Gerada:**")
+            st.code(query_pandas, language="python")
+
+            # 🔹 Exibe o resultado
+            st.write("📊 **Resultado:**")
+            st.dataframe(resposta)
+
+            # 🔹 Enriquecimento da resposta com LLM
+            explicacao_prompt = f"""
+            Você gerou a seguinte consulta Pandas:
+            ```python
+            {query_pandas}
+            ```
+
+            O resultado foi:
+            ```
+            {resposta.to_string(index=False)}
+            ```
+
+            Agora, forneça uma análise interpretando os dados e explicando o que eles representam.
+            """
+            explicacao_llm = llm.invoke(explicacao_prompt)
+            explicacao = explicacao_llm.content.strip()
+
+            # 🔹 Exibe a análise formatada como Markdown
+            st.subheader("📢 Explicação da Resposta:")
+            st.markdown(f"> {explicacao}")
+
+            # 🔹 Adiciona a resposta ao histórico
+            st.session_state.historico.append(SystemMessage(content=query_pandas))
+            st.session_state.historico.append(SystemMessage(content=explicacao))
+
+        except Exception as e:
+            st.error(f"❌ **Erro ao executar a consulta:** {str(e)}")

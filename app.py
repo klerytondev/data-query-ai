@@ -22,7 +22,7 @@ def initial_parameters() -> tuple:
 model, parser, client = initial_parameters()
 
 # Carregar arquivo CSV e tratar valores ausentes
-df = pd.read_csv('data/ocorrencia.csv', delimiter=";", encoding='latin1', on_bad_lines='skip').fillna(value=0)
+df = pd.read_csv('data/caarros.csv', delimiter=";", encoding='latin1', on_bad_lines='skip').fillna(value=0)
 print(df.head())
 print(df.shape)
 
