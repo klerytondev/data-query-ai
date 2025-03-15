@@ -55,7 +55,6 @@ def validar_query(query):
     padrao_proibido = r"\b(DROP|DELETE|ALTER|UPDATE|INSERT|REPLACE|MERGE|TRUNCATE)\b"
     return not re.search(padrao_proibido, query, re.IGNORECASE)
 
-# 🔹 Prefixo atualizado com o esquema detalhado
 prefixo = f"""
 Você está atuando como um assistente de dados e deve gerar consultas Pandas para responder perguntas sobre um DataFrame.
 
