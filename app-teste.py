@@ -84,7 +84,6 @@ Agora gere uma consulta Pandas para a seguinte pergunta, considerando o históri
 #     HumanMessage(content=sufixo)
 # ])
 
-# 🔹 Interface Streamlit
 st.title("🔍 Chat de Dados com RAG e Pandas")
 st.write(f"🆔 **ID da Sessão:** {st.session_state.session_id}")
 
